@@ -1157,6 +1157,39 @@ select {
   stroke-linejoin: round;
 }
 
+.cert_var_actions {
+  display: grid;
+  gap: 8px;
+}
+
+.cert_hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.cert_stamp_preview {
+  display: grid;
+  place-items: center;
+  min-height: 88px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(45deg, #f3f4f6 25%, transparent 25%) 0 0 / 12px 12px,
+    linear-gradient(-45deg, #f3f4f6 25%, transparent 25%) 0 6px / 12px 12px,
+    linear-gradient(45deg, transparent 75%, #f3f4f6 75%) 6px -6px / 12px 12px,
+    linear-gradient(-45deg, transparent 75%, #f3f4f6 75%) -6px 0 / 12px 12px,
+    #fff;
+}
+
+.cert_stamp_preview img {
+  max-width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+}
+
 .cert_var_list {
   display: flex;
   flex-direction: column;
@@ -1339,6 +1372,13 @@ select {
   color: var(--accent);
 }
 
+.cert_tool_letter {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .cert_align_row button.is_on,
 .cert_style_row button.is_on {
   border-color: rgba(124, 58, 237, 0.45);
@@ -1430,6 +1470,35 @@ select {
   overflow: visible;
   touch-action: none;
   user-select: none;
+}
+
+.cert_box.is_image {
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+  border-style: dashed;
+  border-color: rgba(124, 58, 237, 0.45);
+}
+
+.cert_box.is_image.is_on {
+  border-style: solid;
+  background: rgba(243, 232, 255, 0.18);
+}
+
+.cert_box_image {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+  user-select: none;
+  border-radius: 1px;
+}
+
+.cert_box.is_image .cert_box_remove,
+.cert_box.is_image .cert_resize {
+  z-index: 6;
 }
 
 .cert_box.is_on {

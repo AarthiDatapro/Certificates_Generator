@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { SUPABASE_ANON_KEY, SUPABASE_BUCKET, SUPABASE_TABLE, SUPABASE_URL } from "../supabase_config.js";
-import { clean_field } from "./fields.js";
+import { field_is_ready, normalize_field } from "./fields.js";
 
 const BUCKET = String(SUPABASE_BUCKET || "").trim() || "certificate_templates";
 const TABLE = String(SUPABASE_TABLE || "").trim() || "certificate_templates";
@@ -58,7 +58,9 @@ function map_template(row) {
     // Excel files stay local only — never hydrate spreadsheet data from Supabase.
     excel_file_name: "",
     excel_columns: [],
-    fields: as_array(row.fields).map((field) => clean_field(field, limit_width, limit_height)).filter((field) => field.excel_column),
+    fields: as_array(row.fields)
+      .map((field) => normalize_field(field, limit_width, limit_height))
+      .filter((field) => field_is_ready(field)),
     created_at: row.created_at,
     updated_at: row.updated_at
   };

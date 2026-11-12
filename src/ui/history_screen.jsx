@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { render_certificate } from "../lib/draw.js";
+import { is_image_field, text_fields } from "../lib/fields.js";
 import { config_error, delete_template, list_templates, save_template } from "../lib/store.js";
 import { Confirm_Modal } from "./confirm_modal.jsx";
 import { Print_Modal } from "./print_modal.jsx";
@@ -27,7 +28,7 @@ function read_favorites() {
 }
 
 function is_active(item) {
-  return Boolean(item?.image_url && item?.fields?.length);
+  return Boolean(item?.image_url && text_fields(item?.fields).length);
 }
 
 export function History_Screen({ revision, on_open, on_create, notify }) {
@@ -90,6 +91,7 @@ export function History_Screen({ revision, on_open, on_create, notify }) {
         try {
           const sample = {};
           for (const field of item.fields) {
+            if (is_image_field(field)) continue;
             const column = field.excel_column || field.field_key;
             if (column) sample[column] = `{${column}}`;
           }
@@ -133,6 +135,7 @@ export function History_Screen({ revision, on_open, on_create, notify }) {
       if (item.fields?.length && item.image_width && item.image_height) {
         const sample = {};
         for (const field of item.fields) {
+          if (is_image_field(field)) continue;
           const column = field.excel_column || field.field_key;
           if (column) sample[column] = `{${column}}`;
         }
@@ -306,7 +309,13 @@ export function History_Screen({ revision, on_open, on_create, notify }) {
                         {format_day(item.updated_at || item.created_at)}
                       </span>
                       <i aria-hidden="true">•</i>
-                      <span>{item.fields.length} Variable{item.fields.length === 1 ? "" : "s"}</span>
+                      <span>{(() => {
+                        const variables = text_fields(item.fields).length;
+                        const images = (item.fields || []).filter((field) => is_image_field(field)).length;
+                        const parts = [`${variables} Variable${variables === 1 ? "" : "s"}`];
+                        if (images) parts.push(`${images} image${images === 1 ? "" : "s"}`);
+                        return parts.join(" · ");
+                      })()}</span>
                     </p>
                   </div>
                   <footer className="cert_history_card_foot">
@@ -338,7 +347,7 @@ export function History_Screen({ revision, on_open, on_create, notify }) {
                           <button
                             type="button"
                             role="menuitem"
-                            disabled={!item.fields?.length || !item.image_width || !item.image_height}
+                            disabled={!text_fields(item.fields).length || !item.image_width || !item.image_height}
                             onClick={() => {
                               set_menu_id("");
                               set_print_job({ mode: "coordinates", template: item });
@@ -348,7 +357,7 @@ export function History_Screen({ revision, on_open, on_create, notify }) {
                           <button
                             type="button"
                             role="menuitem"
-                            disabled={!item.image_url || !item.fields?.length || !item.image_width || !item.image_height}
+                            disabled={!item.image_url || !text_fields(item.fields).length || !item.image_width || !item.image_height}
                             onClick={() => {
                               set_menu_id("");
                               set_print_job({ mode: "certificates", template: item });

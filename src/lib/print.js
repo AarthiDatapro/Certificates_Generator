@@ -1,4 +1,5 @@
 import { render_certificate } from "./draw.js";
+import { is_image_field, text_fields } from "./fields.js";
 
 export function mapped_column_label(field) {
   return String(field?.excel_column || field?.name || field?.field_key || "column").trim() || "column";
@@ -16,6 +17,9 @@ export function find_column(columns, wanted) {
 
 export function match_print_fields(fields, columns) {
   return (fields || []).map((field) => {
+    if (is_image_field(field)) {
+      return { ...field, _label: String(field.name || field.field_key || "image").trim() || "image" };
+    }
     const label = mapped_column_label(field);
     const matched = find_column(columns, field.excel_column) || find_column(columns, label);
     return { ...field, excel_column: matched, _label: label };
@@ -23,7 +27,7 @@ export function match_print_fields(fields, columns) {
 }
 
 export function missing_print_columns(fields, columns) {
-  return match_print_fields(fields, columns)
+  return match_print_fields(text_fields(fields), columns)
     .filter((field) => !field.excel_column)
     .map((field) => field._label);
 }
@@ -155,7 +159,7 @@ export async function render_print_rows(template, rows, {
   if (!width || !height) {
     throw new Error("This template is missing image size.");
   }
-  if (!template.fields?.length) {
+  if (!text_fields(template.fields).length) {
     throw new Error("This template has no variables.");
   }
   if (!rows?.length) {

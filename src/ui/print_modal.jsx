@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { read_excel } from "../lib/excel.js";
+import { is_image_field, text_fields } from "../lib/fields.js";
 import {
   mapped_column_label,
   match_print_fields,
@@ -35,11 +36,11 @@ export function Print_Modal({ open, mode, template, notify, on_close }) {
   const [print_urls, set_print_urls] = useState([]);
 
   const required = useMemo(
-    () => (template?.fields || []).map((field) => mapped_column_label(field)),
+    () => text_fields(template?.fields).map((field) => mapped_column_label(field)),
     [template]
   );
   const matched = useMemo(
-    () => match_print_fields(template?.fields || [], columns),
+    () => match_print_fields(template?.fields || [], columns).filter((field) => !is_image_field(field)),
     [columns, template]
   );
   const missing = useMemo(
@@ -125,7 +126,7 @@ export function Print_Modal({ open, mode, template, notify, on_close }) {
   }
 
   function validation_message() {
-    if (!template.fields?.length) return "This template has no mapped columns.";
+    if (!text_fields(template.fields).length) return "This template has no mapped columns.";
     if (!file_name) return "Upload an Excel file first.";
     if (!rows.length) return "The Excel file has no data rows.";
     if (missing.length) return `Missing columns: ${missing.join(", ")}`;

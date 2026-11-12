@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { render_certificate } from "../lib/draw.js";
 import { read_excel } from "../lib/excel.js";
-import { ALIGNMENTS, FONT_FAMILIES, GRID_SPACINGS, clean_field, fresh_field } from "../lib/fields.js";
+import {
+  ALIGNMENTS,
+  FONT_FAMILIES,
+  GRID_SPACINGS,
+  fresh_field,
+  fresh_image_field,
+  is_image_field,
+  normalize_field,
+  text_fields
+} from "../lib/fields.js";
 import { delete_template, save_template } from "../lib/store.js";
 import { Confirm_Modal } from "./confirm_modal.jsx";
 import { Stepper } from "./stepper.jsx";
@@ -24,6 +33,24 @@ function is_image(file) {
 
 function is_excel(file) {
   return /\.xlsx$|\.xls$|\.csv$/i.test(file?.name || "");
+}
+
+function file_to_data_url(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("The image could not be read."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function load_image_size(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve({ width: image.naturalWidth || 0, height: image.naturalHeight || 0 });
+    image.onerror = () => reject(new Error("The image could not be read."));
+    image.src = src;
+  });
 }
 
 export function Template_Designer({ initial, notify, on_history, on_new, on_saved, on_deleted }) {
@@ -59,9 +86,12 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
   const [excel_over, set_excel_over] = useState(false);
   const [image_over, set_image_over] = useState(false);
   const [history_tick, set_history_tick] = useState(0);
+  const [tool, set_tool] = useState("select");
   const stage_ref = useRef(null);
   const excel_ref = useRef(null);
   const image_ref = useRef(null);
+  const stamp_ref = useRef(null);
+  const replace_stamp_key_ref = useRef("");
   const local_url_ref = useRef("");
   const fields_ref = useRef([]);
   const past_ref = useRef([]);
@@ -71,6 +101,8 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
   fields_ref.current = fields;
   const picture = local_url || image_url;
   const active = fields.find((field) => field.field_key === active_key) || null;
+  const active_is_image = is_image_field(active);
+  const variable_fields = text_fields(fields);
 
   function clamp_zoom(next_value) {
     return Math.min(2, Math.max(0.1, Number(Number(next_value).toFixed(2)) || 1));
@@ -194,11 +226,12 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
   }, [preview_url]);
 
   function apply_excel(parsed) {
-    const next = fields_ref.current.map((field) =>
-      !field.excel_column || parsed.columns.includes(field.excel_column) ?
+    const next = fields_ref.current.map((field) => {
+      if (is_image_field(field)) return field;
+      return !field.excel_column || parsed.columns.includes(field.excel_column) ?
         field :
-        { ...field, excel_column: "" }
-    );
+        { ...field, excel_column: "" };
+    });
     set_excel_file_name(parsed.file_name);
     set_columns(parsed.columns);
     set_rows(parsed.rows);
@@ -247,7 +280,7 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
       }
       set_width(next_width);
       set_height(next_height);
-      set_fields((current) => current.map((field) => clean_field(field, next_width, next_height)));
+      set_fields((current) => current.map((field) => normalize_field(field, next_width, next_height)));
       set_file(next);
       remember_local(url);
     };
@@ -277,17 +310,72 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
       return;
     }
     push_history();
-    let n = fields_ref.current.length + 1;
+    set_tool("select");
+    let n = variable_fields.length + 1;
     while (fields_ref.current.some((field) => field.field_key === `variable_${n}`)) n += 1;
     const next = fresh_field("", width, height, fields_ref.current.length, `variable_${n}`);
     set_fields((current) => [...current, next]);
     set_active_key(next.field_key);
   }
 
+  async function take_stamp(next) {
+    if (!next) return;
+    if (!width || !height) {
+      notify("error", "Upload the certificate picture first.");
+      return;
+    }
+    if (!is_image(next)) {
+      notify("error", "Use a PNG or JPG stamp image.");
+      return;
+    }
+    if (next.size > 2 * 1024 * 1024) {
+      notify("error", "The stamp image must be 2 MB or smaller.");
+      return;
+    }
+    const replace_key = replace_stamp_key_ref.current;
+    replace_stamp_key_ref.current = "";
+    try {
+      const data_url = await file_to_data_url(next);
+      const size = await load_image_size(data_url);
+      if (!size.width || !size.height) {
+        notify("error", "That image could not be read.");
+        return;
+      }
+      push_history();
+      set_tool("select");
+      const existing = replace_key ? fields_ref.current.find((field) => field.field_key === replace_key && is_image_field(field)) : null;
+      if (existing) {
+        patch_field(existing.field_key, { image_data: data_url });
+        set_active_key(existing.field_key);
+        return;
+      }
+      let n = fields_ref.current.filter((field) => is_image_field(field)).length + 1;
+      while (fields_ref.current.some((field) => field.field_key === `image_${n}`)) n += 1;
+      const overlay = fresh_image_field(data_url, size.width, size.height, width, height, fields_ref.current.length, `image_${n}`);
+      const stem = String(next.name || "").replace(/\.[^.]+$/, "").trim();
+      if (stem) overlay.name = stem.slice(0, 48);
+      set_fields((current) => [...current, overlay]);
+      set_active_key(overlay.field_key);
+    } catch (error) {
+      notify("error", error.message || "The image could not be read.");
+    }
+  }
+
+  function request_stamp(replace_key = "") {
+    if (!width || !height) {
+      notify("error", "Upload the certificate picture first.");
+      return;
+    }
+    replace_stamp_key_ref.current = String(replace_key || "");
+    set_tool("image");
+    stamp_ref.current?.click();
+  }
+
   function map_column(field, excel_column) {
+    if (is_image_field(field)) return;
     const mapped = String(excel_column || "").trim();
     if (field.excel_column === mapped) return;
-    if (mapped && fields_ref.current.some((item) => item.field_key !== field.field_key && item.excel_column === mapped)) {
+    if (mapped && fields_ref.current.some((item) => !is_image_field(item) && item.field_key !== field.field_key && item.excel_column === mapped)) {
       notify("error", `${mapped} is already mapped to another variable.`);
       return;
     }
@@ -374,9 +462,11 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
       el.style.width = `${next_w * scale}px`;
       el.style.height = `${next_h * scale}px`;
     }
+    const max_h = is_image_field(field) ? 4000 : 800;
+    const min_w = is_image_field(field) ? 24 : 40;
     function on_move(move_event) {
-      next_w = Math.max(40, Math.min(4000, drag.origin_w + (move_event.clientX - drag.x) / scale));
-      next_h = Math.max(24, Math.min(800, drag.origin_h + (move_event.clientY - drag.y) / scale));
+      next_w = Math.max(min_w, Math.min(4000, drag.origin_w + (move_event.clientX - drag.x) / scale));
+      next_h = Math.max(24, Math.min(max_h, drag.origin_h + (move_event.clientY - drag.y) / scale));
       if (!frame) frame = requestAnimationFrame(paint);
     }
     function on_up() {
@@ -408,21 +498,26 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
       notify("error", "The certificate picture has no size yet.");
       return;
     }
-    if (!fields.length) {
+    if (!variable_fields.length) {
       notify("error", "Add at least one variable on the certificate.");
       return;
     }
-    const unmapped = fields.find((field) => !field.excel_column);
+    const unmapped = variable_fields.find((field) => !field.excel_column);
     if (unmapped) {
       notify("error", "Map every variable to an Excel column.");
       return;
     }
     if (columns.length) {
-      const missing = fields.find((field) => !columns.includes(field.excel_column));
+      const missing = variable_fields.find((field) => !columns.includes(field.excel_column));
       if (missing) {
         notify("error", `${missing.excel_column} is not a column in this Excel file.`);
         return;
       }
+    }
+    const broken_image = fields.find((field) => is_image_field(field) && !String(field.image_data || "").trim());
+    if (broken_image) {
+      notify("error", "One of the placed images is missing. Remove it or add the image again.");
+      return;
     }
     set_job("save");
     try {
@@ -434,7 +529,7 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
         image_data: image_url.startsWith("data:") ? image_url : "",
         image_width: width,
         image_height: height,
-        fields: fields.map((field) => clean_field(field, width, height))
+        fields: fields.map((field) => normalize_field(field, width, height))
       });
       set_template_id(saved.id);
       set_template_name(saved.template_name);
@@ -460,7 +555,7 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
       return;
     }
     if (!fields.length) {
-      notify("error", "Place at least one column on the certificate.");
+      notify("error", "Place at least one variable or image on the certificate.");
       return;
     }
     set_job("preview");
@@ -597,7 +692,7 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
               <ol>
                 <li>Upload Excel</li>
                 <li>Add picture</li>
-                <li>Add variables</li>
+                <li>Add variables & stamps</li>
               </ol>
             </div>
             <div className="cert_gate_card">
@@ -723,24 +818,27 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
             <section className="cert_card cert_vars">
               <header className="cert_section_head">
                 <span>3</span>
-                <h2>Variables</h2>
+                <h2>Variables & images</h2>
               </header>
               <div className="cert_section_body">
                 <div className="cert_var_list">
                   {fields.map((field) =>
                     <div key={field.field_key} className={field.field_key === active_key ? "cert_var is_on" : "cert_var"}>
-                      <button type="button" onClick={() => set_active_key(field.field_key)}>
-                        <i>{field.excel_column ? "✓" : "T"}</i>
+                      <button type="button" onClick={() => { set_tool("select"); set_active_key(field.field_key); }}>
+                        <i>{is_image_field(field) ? "▣" : field.excel_column ? "✓" : "T"}</i>
                         <span>
                           <b>{field.name || field.field_key}</b>
-                          <small>{field.excel_column || "Select a mapped column"}</small>
+                          <small>{is_image_field(field) ? "Image · placed on canvas" : field.excel_column || "Select a mapped column"}</small>
                         </span>
                       </button>
                       <button type="button" className="cert_var_x" aria-label={`Remove ${field.name || field.field_key}`} onClick={() => remove_field(field.field_key)}>×</button>
                     </div>
                   )}
                 </div>
-                <button type="button" className="cert_ghost cert_full" onClick={add_variable}>+ Add variable</button>
+                <div className="cert_var_actions">
+                  <button type="button" className="cert_ghost cert_full" onClick={add_variable}>+ Add variable</button>
+                  <button type="button" className="cert_ghost cert_full" onClick={() => request_stamp()}>+ Add image</button>
+                </div>
               </div>
             </section>
           </aside>
@@ -748,9 +846,28 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
           <main className="cert_stage_wrap">
             <div className="cert_tools">
               <span className="cert_tools_label">Canvas</span>
-              <button type="button" className={show_grid ? "is_on" : undefined} aria-label="Grid" onClick={() => set_show_grid((value) => !value)}>
+              <button type="button" className={tool === "select" ? "is_on" : undefined} aria-label="Select" title="Select" onClick={() => set_tool("select")}>
+                <svg viewBox="0 0 24 24"><path d="M5 3l6.5 17 2-6.5L20 11.5 5 3Z" /></svg>
+              </button>
+              <button type="button" className={tool === "text" ? "is_on" : undefined} aria-label="Add variable" title="Add variable" onClick={add_variable}>
+                <span className="cert_tool_letter" aria-hidden="true">T</span>
+              </button>
+              <button type="button" className={tool === "image" ? "is_on" : undefined} aria-label="Add image" title="Add image / stamp" onClick={() => request_stamp()}>
+                <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2" /><circle cx="9.5" cy="10.5" r="1.6" /><path d="M7 16l3.2-3.2a1.2 1.2 0 0 1 1.6 0L15 16l1.4-1.4a1.2 1.2 0 0 1 1.6 0L20 16" /></svg>
+              </button>
+              <button type="button" className={show_grid ? "is_on" : undefined} aria-label="Grid" title="Grid" onClick={() => set_show_grid((value) => !value)}>
                 <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM12 5v14M5 12h14" /></svg>
               </button>
+              <input
+                ref={stamp_ref}
+                type="file"
+                accept="image/png,image/jpeg"
+                hidden
+                onChange={(event) => {
+                  take_stamp(event.target.files?.[0]);
+                  event.target.value = "";
+                  set_tool("select");
+                }} />
               <div className="cert_tools_end">
                 <button type="button" aria-label="Undo" disabled={!can_undo} onClick={undo}>
                   <svg viewBox="0 0 24 24"><path d="M8 8H4V4" /><path d="M4 8a8 8 0 1 1 2 6" /></svg>
@@ -795,45 +912,59 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
                   {show_grid ?
                     <span className="cert_grid" style={{ backgroundSize: `${grid_spacing * zoom}px ${grid_spacing * zoom}px` }} /> :
                     null}
-                  {fields.map((field) =>
-                    <div
-                      key={field.field_key}
-                      className={field.field_key === active_key ? "cert_box is_on" : "cert_box"}
-                      style={{
-                        left: field.x_position * zoom,
-                        top: field.y_position * zoom,
-                        width: field.box_width * zoom,
-                        height: field.box_height * zoom,
-                        color: field.font_color,
-                        fontFamily: field.font_family,
-                        fontSize: field.font_size * zoom,
-                        fontWeight: field.bold ? 700 : 400,
-                        fontStyle: field.italic ? "italic" : "normal",
-                        textDecoration: field.underline ? "underline" : "none",
-                        letterSpacing: `${field.letter_spacing * zoom}px`
-                      }}
-                      onPointerDown={(event) => on_drag_start(event, field)}>
-                      <span className={`cert_box_label is_${field.text_alignment}`}>{`{${field.name || field.excel_column || field.field_key}}`}</span>
-                      {field.field_key === active_key ?
-                        <>
-                          <button
-                            type="button"
-                            className="cert_box_remove"
-                            aria-label={`Remove ${field.name || field.field_key}`}
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onClick={() => remove_field(field.field_key)}>
-                            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg>
-                          </button>
-                          <span className="cert_resize" onPointerDown={(event) => on_resize_start(event, field)} />
-                        </> :
-                        null}
-                    </div>
-                  )}
+                  {fields.map((field) => {
+                    const image_box = is_image_field(field);
+                    return (
+                      <div
+                        key={field.field_key}
+                        className={[
+                          "cert_box",
+                          image_box ? "is_image" : "",
+                          field.field_key === active_key ? "is_on" : ""
+                        ].filter(Boolean).join(" ")}
+                        style={image_box ? {
+                          left: field.x_position * zoom,
+                          top: field.y_position * zoom,
+                          width: field.box_width * zoom,
+                          height: field.box_height * zoom
+                        } : {
+                          left: field.x_position * zoom,
+                          top: field.y_position * zoom,
+                          width: field.box_width * zoom,
+                          height: field.box_height * zoom,
+                          color: field.font_color,
+                          fontFamily: field.font_family,
+                          fontSize: field.font_size * zoom,
+                          fontWeight: field.bold ? 700 : 400,
+                          fontStyle: field.italic ? "italic" : "normal",
+                          textDecoration: field.underline ? "underline" : "none",
+                          letterSpacing: `${field.letter_spacing * zoom}px`
+                        }}
+                        onPointerDown={(event) => { set_tool("select"); on_drag_start(event, field); }}>
+                        {image_box ?
+                          <img className="cert_box_image" src={field.image_data} alt={field.name || "Stamp"} draggable="false" /> :
+                          <span className={`cert_box_label is_${field.text_alignment}`}>{`{${field.name || field.excel_column || field.field_key}}`}</span>}
+                        {field.field_key === active_key ?
+                          <>
+                            <button
+                              type="button"
+                              className="cert_box_remove"
+                              aria-label={`Remove ${field.name || field.field_key}`}
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onClick={() => remove_field(field.field_key)}>
+                              <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg>
+                            </button>
+                            <span className="cert_resize" onPointerDown={(event) => on_resize_start(event, field)} />
+                          </> :
+                          null}
+                      </div>
+                    );
+                  })}
                 </div> :
                 null}
             </div>
             <footer className="cert_foot">
-              <span>Canvas: {width || "—"} × {height || "—"} px. Arrows move the selected variable. Delete removes it.</span>
+              <span>Canvas: {width || "—"} × {height || "—"} px. Arrows move the selection. Delete removes it. Use the image tool for stamps.</span>
               <div className="cert_foot_end">
                 <label>
                   <input type="checkbox" checked={show_grid} onChange={(event) => set_show_grid(event.target.checked)} />
@@ -853,129 +984,170 @@ export function Template_Designer({ initial, notify, on_history, on_new, on_save
             <div className="cert_prop_body">
               {!active ?
                 <div className="cert_prop_empty">
-                  <strong>{fields.length ? "Select a variable" : "No variables yet"}</strong>
-                  <p>{fields.length ? "Click a variable or a box to edit it." : "Add a variable, then map it to an Excel column."}</p>
+                  <strong>{fields.length ? "Select an item" : "Nothing placed yet"}</strong>
+                  <p>{fields.length ? "Click a variable, image, or box to edit it." : "Add a variable or stamp image, then place it on the certificate."}</p>
                 </div> :
-                <>
-                  <section className="cert_prop_block">
-                    <header className="cert_section_head">
-                      <span>1</span>
-                      <h3>Variable</h3>
-                    </header>
-                    <div className="cert_section_body">
-                      <label className="cert_field">
-                        <input
-                          value={active.name || ""}
-                          onFocus={push_history}
-                          onChange={(event) => patch_field(active.field_key, { name: event.target.value })}
-                          onBlur={(event) => rename_variable(active, event.target.value)}
-                          placeholder="Name"
-                          aria-label="Name" />
-                      </label>
-                      <label className="cert_field">
-                        <select
-                          value={active.excel_column}
-                          onChange={(event) => map_column(active, event.target.value)}
-                          aria-label="Mapped column">
-                          <option value="">Mapped column</option>
-                          {active.excel_column && !columns.includes(active.excel_column) ?
-                            <option value={active.excel_column}>{active.excel_column}</option> :
-                            null}
-                          {columns.map((column) => <option key={column} value={column}>{column}</option>)}
-                        </select>
-                      </label>
-                    </div>
-                  </section>
-                  <section className="cert_prop_block">
-                    <header className="cert_section_head">
-                      <span>2</span>
-                      <h3>Text style</h3>
-                    </header>
-                    <div className="cert_section_body cert_text_style">
-                      <Stepper label="Font size" value={active.font_size} min={8} max={200} on_focus={push_history} on_change={(font_size) => patch_field(active.field_key, { font_size })} />
-                      <div className="cert_style_row" role="group" aria-label="Text style">
-                        {[["bold", "Bold", "B"], ["italic", "Italic", "I"], ["underline", "Underline", "U"]].map(([key, label, mark]) =>
-                          <button
-                            key={key}
-                            type="button"
-                            className={active[key] ? "is_on" : undefined}
-                            aria-label={label}
-                            onClick={() => { push_history(); patch_field(active.field_key, { [key]: !active[key] }); }}>
-                            {mark}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </section>
-                  <section className="cert_prop_block">
-                    <header className="cert_section_head">
-                      <span>3</span>
-                      <h3>Position and size</h3>
-                    </header>
-                    <div className="cert_section_body">
-                      <div className="cert_grid2">
-                        <Stepper plain label="X" value={active.x_position} min={0} max={Math.max(0, width - 1)} on_focus={push_history} on_change={(x_position) => patch_field(active.field_key, { x_position })} />
-                        <Stepper plain label="Y" value={active.y_position} min={0} max={Math.max(0, height - 1)} on_focus={push_history} on_change={(y_position) => patch_field(active.field_key, { y_position })} />
-                        <Stepper plain label="W" value={active.box_width} min={40} max={4000} on_focus={push_history} on_change={(box_width) => patch_field(active.field_key, { box_width })} />
-                        <Stepper plain label="H" value={active.box_height} min={24} max={800} on_focus={push_history} on_change={(box_height) => patch_field(active.field_key, { box_height })} />
-                      </div>
-                    </div>
-                  </section>
-                  <section className="cert_prop_block">
-                    <button type="button" className="cert_advanced cert_section_head" aria-expanded={advanced} onClick={() => set_advanced((open) => !open)}>
-                      <span>4</span>
-                      <h3>Advanced</h3>
-                      <i>{advanced ? "▴" : "▾"}</i>
-                    </button>
-                    {advanced ?
+                active_is_image ?
+                  <>
+                    <section className="cert_prop_block">
+                      <header className="cert_section_head">
+                        <span>1</span>
+                        <h3>Image</h3>
+                      </header>
                       <div className="cert_section_body">
                         <label className="cert_field">
-                          <span>Font</span>
-                          <select value={active.font_family} onFocus={push_history} onChange={(event) => patch_field(active.field_key, { font_family: event.target.value })}>
-                            {FONT_FAMILIES.map((family) => <option key={family} value={family}>{family}</option>)}
+                          <input
+                            value={active.name || ""}
+                            onFocus={push_history}
+                            onChange={(event) => patch_field(active.field_key, { name: event.target.value })}
+                            onBlur={(event) => rename_variable(active, event.target.value)}
+                            placeholder="Name"
+                            aria-label="Name" />
+                        </label>
+                        {active.image_data ?
+                          <div className="cert_stamp_preview">
+                            <img src={active.image_data} alt="" />
+                          </div> :
+                          null}
+                        <button type="button" className="cert_ghost cert_full" onClick={() => request_stamp(active.field_key)}>Replace image</button>
+                        <p className="cert_hint">Saved with X/Y and size. Printed on every certificate at these coordinates.</p>
+                      </div>
+                    </section>
+                    <section className="cert_prop_block">
+                      <header className="cert_section_head">
+                        <span>2</span>
+                        <h3>Position and size</h3>
+                      </header>
+                      <div className="cert_section_body">
+                        <div className="cert_grid2">
+                          <Stepper plain label="X" value={active.x_position} min={0} max={Math.max(0, width - 1)} on_focus={push_history} on_change={(x_position) => patch_field(active.field_key, { x_position })} />
+                          <Stepper plain label="Y" value={active.y_position} min={0} max={Math.max(0, height - 1)} on_focus={push_history} on_change={(y_position) => patch_field(active.field_key, { y_position })} />
+                          <Stepper plain label="W" value={active.box_width} min={24} max={4000} on_focus={push_history} on_change={(box_width) => patch_field(active.field_key, { box_width })} />
+                          <Stepper plain label="H" value={active.box_height} min={24} max={4000} on_focus={push_history} on_change={(box_height) => patch_field(active.field_key, { box_height })} />
+                        </div>
+                      </div>
+                    </section>
+                  </> :
+                  <>
+                    <section className="cert_prop_block">
+                      <header className="cert_section_head">
+                        <span>1</span>
+                        <h3>Variable</h3>
+                      </header>
+                      <div className="cert_section_body">
+                        <label className="cert_field">
+                          <input
+                            value={active.name || ""}
+                            onFocus={push_history}
+                            onChange={(event) => patch_field(active.field_key, { name: event.target.value })}
+                            onBlur={(event) => rename_variable(active, event.target.value)}
+                            placeholder="Name"
+                            aria-label="Name" />
+                        </label>
+                        <label className="cert_field">
+                          <select
+                            value={active.excel_column}
+                            onChange={(event) => map_column(active, event.target.value)}
+                            aria-label="Mapped column">
+                            <option value="">Mapped column</option>
+                            {active.excel_column && !columns.includes(active.excel_column) ?
+                              <option value={active.excel_column}>{active.excel_column}</option> :
+                              null}
+                            {columns.map((column) => <option key={column} value={column}>{column}</option>)}
                           </select>
                         </label>
-                        <label className="cert_color">
-                          <span className="cert_label">Color</span>
-                          <span className="cert_color_row">
-                            <span className="cert_color_swatch" style={{ background: /^#[0-9a-fA-F]{6}$/.test(active.font_color) ? active.font_color : "#0D1B3F" }}>
+                      </div>
+                    </section>
+                    <section className="cert_prop_block">
+                      <header className="cert_section_head">
+                        <span>2</span>
+                        <h3>Text style</h3>
+                      </header>
+                      <div className="cert_section_body cert_text_style">
+                        <Stepper label="Font size" value={active.font_size} min={8} max={200} on_focus={push_history} on_change={(font_size) => patch_field(active.field_key, { font_size })} />
+                        <div className="cert_style_row" role="group" aria-label="Text style">
+                          {[["bold", "Bold", "B"], ["italic", "Italic", "I"], ["underline", "Underline", "U"]].map(([key, label, mark]) =>
+                            <button
+                              key={key}
+                              type="button"
+                              className={active[key] ? "is_on" : undefined}
+                              aria-label={label}
+                              onClick={() => { push_history(); patch_field(active.field_key, { [key]: !active[key] }); }}>
+                              {mark}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </section>
+                    <section className="cert_prop_block">
+                      <header className="cert_section_head">
+                        <span>3</span>
+                        <h3>Position and size</h3>
+                      </header>
+                      <div className="cert_section_body">
+                        <div className="cert_grid2">
+                          <Stepper plain label="X" value={active.x_position} min={0} max={Math.max(0, width - 1)} on_focus={push_history} on_change={(x_position) => patch_field(active.field_key, { x_position })} />
+                          <Stepper plain label="Y" value={active.y_position} min={0} max={Math.max(0, height - 1)} on_focus={push_history} on_change={(y_position) => patch_field(active.field_key, { y_position })} />
+                          <Stepper plain label="W" value={active.box_width} min={40} max={4000} on_focus={push_history} on_change={(box_width) => patch_field(active.field_key, { box_width })} />
+                          <Stepper plain label="H" value={active.box_height} min={24} max={800} on_focus={push_history} on_change={(box_height) => patch_field(active.field_key, { box_height })} />
+                        </div>
+                      </div>
+                    </section>
+                    <section className="cert_prop_block">
+                      <button type="button" className="cert_advanced cert_section_head" aria-expanded={advanced} onClick={() => set_advanced((open) => !open)}>
+                        <span>4</span>
+                        <h3>Advanced</h3>
+                        <i>{advanced ? "▴" : "▾"}</i>
+                      </button>
+                      {advanced ?
+                        <div className="cert_section_body">
+                          <label className="cert_field">
+                            <span>Font</span>
+                            <select value={active.font_family} onFocus={push_history} onChange={(event) => patch_field(active.field_key, { font_family: event.target.value })}>
+                              {FONT_FAMILIES.map((family) => <option key={family} value={family}>{family}</option>)}
+                            </select>
+                          </label>
+                          <label className="cert_color">
+                            <span className="cert_label">Color</span>
+                            <span className="cert_color_row">
+                              <span className="cert_color_swatch" style={{ background: /^#[0-9a-fA-F]{6}$/.test(active.font_color) ? active.font_color : "#0D1B3F" }}>
+                                <input
+                                  type="color"
+                                  value={/^#[0-9a-fA-F]{6}$/.test(active.font_color) ? active.font_color : "#0D1B3F"}
+                                  onFocus={push_history}
+                                  onChange={(event) => patch_field(active.field_key, { font_color: event.target.value })}
+                                  aria-label="Pick color" />
+                              </span>
                               <input
-                                type="color"
-                                value={/^#[0-9a-fA-F]{6}$/.test(active.font_color) ? active.font_color : "#0D1B3F"}
+                                type="text"
+                                value={active.font_color}
                                 onFocus={push_history}
                                 onChange={(event) => patch_field(active.field_key, { font_color: event.target.value })}
-                                aria-label="Pick color" />
+                                placeholder="#0D1B3F"
+                                spellCheck={false}
+                                aria-label="Color hex" />
                             </span>
-                            <input
-                              type="text"
-                              value={active.font_color}
-                              onFocus={push_history}
-                              onChange={(event) => patch_field(active.field_key, { font_color: event.target.value })}
-                              placeholder="#0D1B3F"
-                              spellCheck={false}
-                              aria-label="Color hex" />
-                          </span>
-                        </label>
-                        <div className="cert_align" role="group" aria-label="Alignment">
-                          <span>Alignment</span>
-                          <div className="cert_align_row">
-                            {ALIGNMENTS.map((alignment) =>
-                              <button
-                                key={alignment}
-                                type="button"
-                                className={active.text_alignment === alignment ? "is_on" : undefined}
-                                aria-label={alignment}
-                                onClick={() => { push_history(); patch_field(active.field_key, { text_alignment: alignment }); }}>
-                                <Align_Icon kind={alignment} />
-                              </button>
-                            )}
+                          </label>
+                          <div className="cert_align" role="group" aria-label="Alignment">
+                            <span>Alignment</span>
+                            <div className="cert_align_row">
+                              {ALIGNMENTS.map((alignment) =>
+                                <button
+                                  key={alignment}
+                                  type="button"
+                                  className={active.text_alignment === alignment ? "is_on" : undefined}
+                                  aria-label={alignment}
+                                  onClick={() => { push_history(); patch_field(active.field_key, { text_alignment: alignment }); }}>
+                                  <Align_Icon kind={alignment} />
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                        <Stepper label="Letter spacing" value={active.letter_spacing} min={-5} max={40} on_focus={push_history} on_change={(letter_spacing) => patch_field(active.field_key, { letter_spacing })} />
-                      </div> :
-                      null}
-                  </section>
-                </>}
+                          <Stepper label="Letter spacing" value={active.letter_spacing} min={-5} max={40} on_focus={push_history} on_change={(letter_spacing) => patch_field(active.field_key, { letter_spacing })} />
+                        </div> :
+                        null}
+                    </section>
+                  </>}
             </div>
           </aside>
         </div>}
