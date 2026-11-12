@@ -7,5 +7,5 @@ export default defineConfig({
     port: 5190,
     strictPort: true
   },
-  base: "/my-react-app/"
+  base: "/Certificates_Generator/"
 });
